@@ -1,0 +1,222 @@
+/*
+===========================================================
+Procedure Name : cleanse_bronze_data
+Author         : Seif Khaled
+Description    :
+    This procedure performs data cleansing and transformation
+    on raw source data stored in the BRONZE schema.
+
+    It recreates cleaned tables in the current schema by:
+    1. Dropping existing target tables
+    2. Rebuilding them using transformed data from BRONZE tables
+
+    Covered domains:
+    - CRM customer data
+    - CRM product data
+    - CRM sales data
+    - ERP customer demographics
+    - ERP customer location
+    - ERP product category data
+
+Notes:
+    - This procedure assumes the target tables already exist
+      or can be dropped successfully.
+    - No exception handling is included, as requested.
+    - DDL statements are executed using dynamic SQL
+      because CREATE TABLE and DROP TABLE cannot be used
+      directly inside PL/SQL procedures.
+===========================================================
+*/
+
+CREATE OR REPLACE PROCEDURE cleanse_bronze_data
+AS
+BEGIN
+
+    ---------------------------------------------------------------------------------------
+    --                                CRM DATA CLEANSING
+    ---------------------------------------------------------------------------------------
+
+    ----------------------------------------------------------------
+    -- Recreate CRM Customer Information Table
+    -- Cleans:
+    -- - Leading/trailing spaces in first and last names
+    -- - Marital status code mapping (S/M -> SINGLE/MARRIED)
+    -- - Gender code mapping (M/F -> MALE/FEMALE)
+    -- - Unknown values replaced with 'n/a'
+    ----------------------------------------------------------------
+    EXECUTE IMMEDIATE 'DROP TABLE crm_cust_info';
+
+    EXECUTE IMMEDIATE '
+        CREATE TABLE crm_cust_info AS
+        SELECT 
+            CST_ID, 
+            CST_KEY,
+            TRIM(CST_FIRSTNAME) AS CST_FIRSTNAME,
+            TRIM(CST_LASTNAME) AS CST_LASTNAME,
+            CASE 
+                WHEN UPPER(TRIM(CST_MARITAL_STATUS)) = ''S'' THEN ''SINGLE''
+                WHEN UPPER(TRIM(CST_MARITAL_STATUS)) = ''M'' THEN ''MARRIED''
+                ELSE ''n/a''
+            END AS CST_MARITAL_STATUS,
+            CASE 
+                WHEN UPPER(TRIM(CST_GNDR)) = ''M'' THEN ''MALE''
+                WHEN UPPER(TRIM(CST_GNDR)) = ''F'' THEN ''FEMALE''
+                ELSE ''n/a''
+            END AS CST_GNDR,
+            CST_CREATE_DATE
+        FROM bronze.crm_cust_info
+    ';
+
+    ----------------------------------------------------------------
+    -- Recreate CRM Product Information Table
+    -- Cleans and transforms:
+    -- - Extract category ID from product key
+    -- - Extract actual product key portion
+    -- - Replace dashes with underscores in category ID
+    -- - Convert zero product cost to NULL
+    -- - Map product line codes to descriptive names
+    -- - Calculate product end date using LEAD function
+    ----------------------------------------------------------------
+    EXECUTE IMMEDIATE 'DROP TABLE crm_prd_info';
+
+    EXECUTE IMMEDIATE '
+        CREATE TABLE crm_prd_info AS
+        SELECT
+            prd_id,
+            REPLACE(SUBSTR(prd_key, 1, 5), ''-'', ''_'') AS cat_id,
+            SUBSTR(prd_key, 7, LENGTH(prd_key)) AS prd_key,
+            prd_nm,
+            NULLIF(prd_cost, 0) AS prd_cost,
+            CASE 
+                WHEN UPPER(TRIM(prd_line)) = ''M'' THEN ''Mountain''
+                WHEN UPPER(TRIM(prd_line)) = ''R'' THEN ''Road''
+                WHEN UPPER(TRIM(prd_line)) = ''S'' THEN ''Other Sales''
+                WHEN UPPER(TRIM(prd_line)) = ''T'' THEN ''Touring''
+                ELSE ''n/a''
+            END AS prd_line,
+            CAST(prd_start_dt AS DATE) AS prd_start_dt,
+            CAST(
+                LEAD(prd_start_dt) OVER (PARTITION BY prd_key ORDER BY prd_start_dt) - 1
+                AS DATE
+            ) AS prd_end_dt
+        FROM bronze.crm_prd_info
+    ';
+
+    ----------------------------------------------------------------
+    -- Recreate CRM Sales Details Table
+    -- Cleans and validates:
+    -- - Converts integer-based dates (YYYYMMDD) to DATE format
+    -- - Invalid or zero dates become NULL
+    -- - Recalculates sales if value is invalid or inconsistent
+    -- - Recalculates price if missing or invalid
+    ----------------------------------------------------------------
+    EXECUTE IMMEDIATE 'DROP TABLE crm_sales_details';
+
+    EXECUTE IMMEDIATE '
+        CREATE TABLE crm_sales_details AS
+        SELECT 
+            sls_ord_num,
+            sls_prd_key,
+            sls_cust_id,
+            CASE 
+                WHEN sls_order_dt = 0 OR LENGTH(sls_order_dt) != 8 THEN NULL
+                ELSE TO_DATE(TO_CHAR(sls_order_dt), ''YYYYMMDD'')
+            END AS sls_order_dt,
+            CASE 
+                WHEN sls_ship_dt = 0 OR LENGTH(sls_ship_dt) != 8 THEN NULL
+                ELSE TO_DATE(TO_CHAR(sls_ship_dt), ''YYYYMMDD'')
+            END AS sls_ship_dt,
+            CASE 
+                WHEN sls_due_dt = 0 OR LENGTH(sls_due_dt) != 8 THEN NULL
+                ELSE TO_DATE(TO_CHAR(sls_due_dt), ''YYYYMMDD'')
+            END AS sls_due_dt,
+            CASE 
+                WHEN sls_sales IS NULL 
+                     OR sls_sales <= 0 
+                     OR sls_sales != sls_quantity * ABS(sls_price)
+                    THEN sls_quantity * ABS(sls_price)
+                ELSE sls_sales
+            END AS sls_sales,
+            sls_quantity,
+            CASE 
+                WHEN sls_price IS NULL OR sls_price <= 0
+                    THEN sls_sales / NULLIF(sls_quantity, 0)
+                ELSE sls_price
+            END AS sls_price
+        FROM bronze.crm_sales_details
+    ';
+
+
+    ---------------------------------------------------------------------------------------
+    --                                ERP DATA CLEANSING
+    ---------------------------------------------------------------------------------------
+
+    ----------------------------------------------------------------
+    -- Recreate ERP Customer Demographics Table
+    -- Cleans:
+    -- - Removes 'NAS' prefix from customer IDs when present
+    -- - Nullifies invalid future birthdates
+    -- - Maps gender codes to descriptive values
+    ----------------------------------------------------------------
+    EXECUTE IMMEDIATE 'DROP TABLE erp_cust_az12';
+
+    EXECUTE IMMEDIATE '
+        CREATE TABLE erp_cust_az12 AS
+        SELECT
+            CASE
+                WHEN cid LIKE ''NAS%'' THEN SUBSTR(cid, 4, LENGTH(cid))
+                ELSE cid
+            END AS cid,
+            CASE
+                WHEN bdate > SYSDATE THEN NULL
+                ELSE bdate
+            END AS bdate,
+            CASE 
+                WHEN UPPER(TRIM(gen)) = ''M'' THEN ''MALE''
+                WHEN UPPER(TRIM(gen)) = ''F'' THEN ''FEMALE''
+                ELSE ''n/a''
+            END AS gen
+        FROM bronze.erp_cust_az12
+    ';
+
+    ----------------------------------------------------------------
+    -- Recreate ERP Customer Location Table
+    -- Cleans:
+    -- - Removes dashes from customer IDs
+    -- - Standardizes country codes to full country names
+    -- - Replaces missing country values with 'n/a'
+    ----------------------------------------------------------------
+    EXECUTE IMMEDIATE 'DROP TABLE erp_loc_a101';
+
+    EXECUTE IMMEDIATE '
+        CREATE TABLE erp_loc_a101 AS
+        SELECT 
+            REPLACE(cid, ''-'', '''') AS cid,
+            CASE 
+                WHEN TRIM(cntry) = ''DE'' THEN ''Germany''
+                WHEN TRIM(cntry) IN (''USA'', ''US'') THEN ''United States''
+                WHEN TRIM(cntry) IS NULL THEN ''n/a''
+                ELSE cntry
+            END AS cntry
+        FROM bronze.erp_loc_a101
+    ';
+
+    ----------------------------------------------------------------
+    -- Recreate ERP Product Category Table
+    -- Cleans:
+    -- - Reformats ID into a standardized pattern: XX-XX
+    ----------------------------------------------------------------
+    EXECUTE IMMEDIATE 'DROP TABLE erp_px_cat_g1v2';
+
+    EXECUTE IMMEDIATE '
+        CREATE TABLE erp_px_cat_g1v2 AS
+        SELECT
+            SUBSTR(ID, 1, 2) || ''-'' || SUBSTR(ID, 4, 2) AS ID,
+            CAT,
+            SUBCAT,
+            MAINTENANCE
+        FROM bronze.erp_px_cat_g1v2
+    ';
+
+END cleanse_bronze_data;
+/
