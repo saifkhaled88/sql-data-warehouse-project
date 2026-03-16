@@ -1,0 +1,164 @@
+/*
+===========================================================
+Procedure Name : create_source_tables
+Author         : Seif Khaled
+Description    :
+    This procedure creates all source tables required for the
+    CRM and ERP layers of the data warehouse project.
+
+    The tables represent:
+    1. CRM customer information
+    2. CRM product information
+    3. CRM sales transaction details
+    4. ERP customer location data
+    5. ERP customer demographic data
+    6. ERP product category data
+
+Notes:
+    - Uses dynamic SQL (EXECUTE IMMEDIATE) because DDL statements
+      such as CREATE TABLE cannot be written directly inside a
+      PL/SQL procedure.
+    - If a table already exists, the procedure skips it and
+      continues creating the remaining tables.
+===========================================================
+*/
+
+CREATE OR REPLACE PROCEDURE create_source_tables
+AS
+BEGIN
+    ----------------------------------------------------------------
+    -- Create CRM Customer Information Table
+    -- Stores customer master data from the CRM system
+    ----------------------------------------------------------------
+    BEGIN
+        EXECUTE IMMEDIATE '
+            CREATE TABLE crm_cust_info (
+                cst_id              NUMBER,
+                cst_key             VARCHAR2(50),
+                cst_firstname       VARCHAR2(50),
+                cst_lastname        VARCHAR2(50),
+                cst_marital_status  VARCHAR2(50),
+                cst_gndr            VARCHAR2(50),
+                cst_create_date     DATE
+            )
+        ';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != -955 THEN -- ORA-00955: name is already used by an existing object
+                RAISE;
+            END IF;
+    END;
+
+    ----------------------------------------------------------------
+    -- Create CRM Product Information Table
+    -- Stores product master data including cost, product line,
+    -- and validity period (start/end dates)
+    ----------------------------------------------------------------
+    BEGIN
+        EXECUTE IMMEDIATE '
+            CREATE TABLE crm_prd_info (
+                prd_id       NUMBER,
+                prd_key      VARCHAR2(50),
+                prd_nm       VARCHAR2(50),
+                prd_cost     NUMBER,
+                prd_line     VARCHAR2(50),
+                prd_start_dt DATE,
+                prd_end_dt   DATE
+            )
+        ';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != -955 THEN
+                RAISE;
+            END IF;
+    END;
+
+    ----------------------------------------------------------------
+    -- Create CRM Sales Details Table
+    -- Stores transactional sales data such as:
+    -- order number, product key, customer ID, dates, quantity, price
+    --
+    -- Note:
+    -- Dates are stored as NUMBER here because the source system may
+    -- provide them in integer format (e.g., YYYYMMDD).
+    ----------------------------------------------------------------
+    BEGIN
+        EXECUTE IMMEDIATE '
+            CREATE TABLE crm_sales_details (
+                sls_ord_num  VARCHAR2(50),
+                sls_prd_key  VARCHAR2(50),
+                sls_cust_id  NUMBER,
+                sls_order_dt NUMBER,
+                sls_ship_dt  NUMBER,
+                sls_due_dt   NUMBER,
+                sls_sales    NUMBER,
+                sls_quantity NUMBER,
+                sls_price    NUMBER
+            )
+        ';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != -955 THEN
+                RAISE;
+            END IF;
+    END;
+
+    ----------------------------------------------------------------
+    -- Create ERP Customer Location Table
+    -- Stores customer-country mapping from ERP system
+    ----------------------------------------------------------------
+    BEGIN
+        EXECUTE IMMEDIATE '
+            CREATE TABLE erp_loc_a101 (
+                cid    VARCHAR2(50),
+                cntry  VARCHAR2(50)
+            )
+        ';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != -955 THEN
+                RAISE;
+            END IF;
+    END;
+
+    ----------------------------------------------------------------
+    -- Create ERP Customer Demographics Table
+    -- Stores customer birth date and gender information
+    ----------------------------------------------------------------
+    BEGIN
+        EXECUTE IMMEDIATE '
+            CREATE TABLE erp_cust_az12 (
+                cid    VARCHAR2(50),
+                bdate  DATE,
+                gen    VARCHAR2(50)
+            )
+        ';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != -955 THEN
+                RAISE;
+            END IF;
+    END;
+
+    ----------------------------------------------------------------
+    -- Create ERP Product Category Table
+    -- Stores product category, subcategory, and maintenance info
+    ----------------------------------------------------------------
+    BEGIN
+        EXECUTE IMMEDIATE '
+            CREATE TABLE erp_px_cat_g1v2 (
+                id           VARCHAR2(50),
+                cat          VARCHAR2(50),
+                subcat       VARCHAR2(50),
+                maintenance  VARCHAR2(50)
+            )
+        ';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != -955 THEN
+                RAISE;
+            END IF;
+    END;
+
+END create_source_tables;
+/
